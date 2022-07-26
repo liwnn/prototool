@@ -6,7 +6,7 @@ Prototool is a tool for working with Protocol Buffers.
 Protofmt formats protobuf files.
 ### Install
 ```bash
-go install github.com/liwnn/prototool/cmd/protofmt
+go install github.com/liwnn/prototool/cmd/protofmt@latest
 ```
 ### Usage
 ```
@@ -31,7 +31,7 @@ protofmt -w -a ./example.proto
 protoclone generate protobuf file's clone code for go.
 ### Install
 ```bash
-go install github.com/liwnn/prototool/cmd/protoclone-go
+go install github.com/liwnn/prototool/cmd/protoclone-go@latest
 ```
 ### Usage
 ```
