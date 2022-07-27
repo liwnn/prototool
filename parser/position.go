@@ -35,7 +35,7 @@ func (f *FileInfo) Line(pos Pos) int {
 	return i
 }
 
-func (f *FileInfo) Position(p Pos, adjusted bool) (pos Position) {
+func (f *FileInfo) Position(p Pos) (pos Position) {
 	pos.Offset = int(p)
 	pos.Line = f.Line(p)
 	pos.Column = int(p) - f.lines[pos.Line-1]

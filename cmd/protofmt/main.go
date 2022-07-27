@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/liwnn/prototool/parser"
@@ -58,6 +59,17 @@ func processFile(filename string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if len(src) == 0 {
+		return nil
+	}
+
+	defer func() {
+		if e := recover(); e != nil {
+			stack := debug.Stack()
+			fmt.Printf("filename[%v] stack[%v]", filename, string(stack))
+			os.Exit(1)
+		}
+	}()
 
 	file := parser.NewFileInfo()
 	p := parser.NewParser(file, src)

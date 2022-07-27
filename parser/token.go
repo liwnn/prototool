@@ -23,9 +23,9 @@ const (
 	GTR
 	ASSIGN
 	LPAREN
-	LBRACK
+	LBRACK // [
 	LBRACE // {
-	COMMA
+	COMMA  // ,
 	RPAREN
 	RBRACK // ]
 	RBRACE
@@ -33,6 +33,7 @@ const (
 	COLON // :
 	PERIOD
 
+	keyword_beg
 	SYNTAX
 	PACKAGE
 	IMPORT
@@ -117,6 +118,8 @@ func (tok Token) String() string {
 	return "token(" + strconv.Itoa(int(tok)) + ")"
 }
 
+func (tok Token) IsKeyword() bool { return keyword_beg < tok && tok < keyword_end }
+
 // reservedKeyWords 保留字
 var reservedKeyWords map[string]Token
 
@@ -132,4 +135,9 @@ func Loopup(ident string) Token {
 		return tok
 	}
 	return IDENT
+}
+
+func IsKeyword(name string) bool {
+	_, ok := reservedKeyWords[name]
+	return ok
 }

@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -67,7 +66,7 @@ type (
 
 	Float struct {
 		Float Pos
-		Value float64
+		Value string
 	}
 
 	String struct {
@@ -139,7 +138,7 @@ type OptionName struct {
 	Lparen       Pos
 	Name         Expr
 	Rparen       Pos
-	PeriodIdents []*Ident
+	PeriodIdents []Expr
 }
 
 func (x *OptionName) Pos() Pos { return x.NamePos }
@@ -147,6 +146,8 @@ func (x *OptionName) Pos() Pos { return x.NamePos }
 type Extensions struct {
 	Extensions Pos
 	Ranges     *Ranges
+	Options    *FieldOptions
+	SemiPos    Pos
 }
 
 func (x *Extensions) Pos() Pos { return x.Extensions }
@@ -194,12 +195,13 @@ func (x *Extend) Pos() Pos  { return x.Extend }
 // Fields
 type (
 	Field struct {
-		TokPos  Pos
-		Label   Token
-		Type    Expr
-		Name    *Ident
-		Number  *Integer
-		Options *FieldOptions
+		TokPos    Pos
+		Label     Token
+		Type      Expr
+		Name      *Ident
+		AssignPos Pos
+		Number    *Integer
+		Options   *FieldOptions
 	}
 
 	MapField struct {
@@ -212,11 +214,12 @@ type (
 	}
 
 	GroupField struct {
-		Label  Token
-		Group  Pos
-		Name   *Ident
-		Number *Integer
-		Fields *FieldList
+		Label   *Ident
+		Group   Pos
+		Name    *Ident
+		Number  *Integer
+		Options *FieldOptions
+		Fields  *FieldList
 	}
 
 	Oneof struct {
@@ -233,17 +236,18 @@ func (x *Oneof) Pos() Pos      { return x.Oneof }
 
 type (
 	FieldList struct {
-		Opening Pos
-		List    []Expr
-		Closing Pos
+		Opening  Pos
+		OpenTok  Token
+		List     []Expr
+		Closing  Pos
+		CloseTok Token
 	}
 
 	EnumField struct {
-		Enum    Pos
 		Name    *Ident
 		TokPos  Pos
 		ID      *Integer
-		Options *FieldOption
+		Options *FieldOptions
 	}
 	FieldOptions struct {
 		Opening Pos
@@ -255,19 +259,35 @@ type (
 		Value Expr
 	}
 
+	KeyOption struct {
+		Opening Pos
+		Name    []*OptionName
+		Closing Pos
+	}
+
 	KeyValueExpr struct {
-		Key   *Ident
+		Key   Expr
 		Value Expr
 	}
 
 	Rpc struct {
-		Rpc            Pos
-		Name           *Ident
-		StreamRequest  Pos
-		RequestType    *MessageType
+		Rpc  Pos
+		Name *Ident
+
+		LparenRequest Pos
+		StreamRequest Pos
+		RequestType   *MessageType
+		RparenRequest Pos
+
+		Return Pos
+
+		LparenResponse Pos
 		StreamResponse Pos
 		ResponseType   *MessageType
-		Body           *FieldList
+		RparenResponse Pos
+
+		Body    *FieldList
+		SemiPos Pos
 	}
 
 	Ranges struct {
@@ -280,6 +300,22 @@ type (
 
 	StrFieldNames struct {
 		Strings []*String
+	}
+	// "A" "B"
+	StringList struct {
+		Strings []*String
+	}
+
+	Array struct {
+		Opening Pos
+		List    []Expr
+		Sep     []Token
+		Closing Pos
+	}
+
+	TokNode struct {
+		TokPos Pos
+		Tok    Token
 	}
 
 	OneofField struct {
@@ -301,7 +337,12 @@ func (x *OneofField) Pos() Pos    { return x.Type.Pos() }
 func (x *FieldList) Pos() Pos     { return x.Opening }
 func (x *FieldList) End() Pos     { return x.Closing }
 func (x *KeyValueExpr) Pos() Pos  { return x.Key.Pos() }
-func (x *EnumField) Pos() Pos     { return x.Enum }
+func (x *EnumField) Pos() Pos     { return x.Name.Pos() }
+func (x *KeyOption) Pos() Pos     { return x.Opening }
+func (x *KeyOption) End() Pos     { return x.Closing }
+func (x *StringList) Pos() Pos    { return x.Strings[0].Pos() }
+func (x *Array) Pos() Pos         { return x.List[0].Pos() }
+func (x *TokNode) Pos() Pos       { return x.TokPos }
 
 func (x *Message) FindNestedMessage(name string) *Message {
 	for _, v := range x.Fields.List {
@@ -383,12 +424,14 @@ func (p *Parser) next0() {
 	p.pos, p.tok, p.lit = p.lexer.Next()
 }
 
-func (p *Parser) eat(tok Token) {
+func (p *Parser) eat(tok Token) Pos {
 	if tok == p.tok {
+		pos := p.pos
 		p.next()
-	} else {
-		panic(fmt.Errorf("expected tok[%v] but current tok is [%v]", tok, p.tok))
+		return pos
 	}
+	pos := p.file.Position(p.pos)
+	panic(fmt.Errorf("Line[%v] Column[%v]", pos.Line, pos.Column))
 }
 
 func (p *Parser) parseCommentGroup() (comments *CommentGroup) {
@@ -420,7 +463,10 @@ func (p *Parser) parseSyntax() *Syntax {
 
 // ParseFile program
 func (p *Parser) ParseFile() *File {
-	p.syntax = p.parseSyntax()
+	if p.tok == SYNTAX {
+		p.syntax = p.parseSyntax()
+	}
+
 	var decls []Expr
 	var pack *Package
 	for p.tok != EOF {
@@ -445,6 +491,9 @@ func (p *Parser) ParseFile() *File {
 			decls = append(decls, p.parseExtend())
 		default:
 			panic("parseFile not implement")
+		}
+		if p.tok == SEMICOLON {
+			p.eat(p.tok)
 		}
 	}
 	return &File{Syntax: p.syntax, Decls: decls, Comments: p.comments}
@@ -486,7 +535,24 @@ func (p *Parser) parseOption() *Option {
 			p.eat(SEMICOLON)
 		}
 	} else {
-		node = p.parseConst()
+		if p.tok == STRING {
+			s := p.parseString()
+			if p.tok == STRING {
+				l := &StringList{}
+				l.Strings = append(l.Strings, s)
+				for p.tok == STRING {
+					l.Strings = append(l.Strings, p.parseString())
+				}
+				node = l
+			} else {
+				node = s
+			}
+		} else if p.tok == LPAREN {
+			node = p.parseOptionName()
+		} else {
+			node = p.parseConst()
+		}
+
 		p.eat(SEMICOLON)
 	}
 	return &Option{Option: pos, Name: name, Value: node}
@@ -494,23 +560,57 @@ func (p *Parser) parseOption() *Option {
 
 func (p *Parser) parseKeyValueArray() *FieldList {
 	opening := p.pos
-	p.eat(LBRACE)
+	openTok := p.tok
+	p.eat(openTok)
+	var closeTok Token
+	switch openTok {
+	case LBRACE:
+		closeTok = RBRACE
+	case LSS:
+		closeTok = GTR
+	default:
+		panic("parseArray not implement")
+	}
 	var list []Expr
-	for p.tok != RBRACE {
+	for p.tok != closeTok {
 		list = append(list, p.parseKeyValue())
+		if p.tok == COMMA {
+			p.eat(p.tok)
+		}
 	}
 	closing := p.pos
-	p.eat(RBRACE)
-	return &FieldList{Opening: opening, List: list, Closing: closing}
+
+	p.eat(closeTok)
+	return &FieldList{
+		Opening:  opening,
+		OpenTok:  openTok,
+		List:     list,
+		Closing:  closing,
+		CloseTok: closeTok,
+	}
 }
 
 func (p *Parser) parseKeyValue() *KeyValueExpr {
-	key := p.parseIdent()
-	var value Expr
-	if p.tok == LBRACE {
-		value = p.parseKeyValueArray()
-	} else {
+	var key Expr
+	switch p.tok {
+	case IDENT:
+		key = p.parseIdent()
+	case LBRACK:
+		key = p.parseKeyOption()
+	default:
+		key = p.parseIdent()
+	}
+	if p.tok == COLON {
 		p.eat(COLON)
+	}
+	var value Expr
+	if p.tok == LBRACE || p.tok == LSS {
+		value = p.parseKeyValueArray()
+	} else if p.tok == LBRACK {
+		value = p.parseArray()
+	} else if p.tok == LPAREN {
+		value = p.parseOptionName()
+	} else {
 		value = p.parseConst()
 	}
 	return &KeyValueExpr{
@@ -524,7 +624,17 @@ func (p *Parser) parseConst() Expr {
 	case IDENT:
 		return p.parseIdent()
 	case STRING:
-		return p.parseString()
+		str := p.parseString()
+		if p.tok == STRING {
+			l := &StringList{}
+			l.Strings = append(l.Strings, str)
+			for p.tok == STRING {
+				l.Strings = append(l.Strings, p.parseString())
+			}
+			return l
+		} else {
+			return str
+		}
 	default:
 		if p.tok == SUB {
 			if t, _ := p.lexer.PeekToken(); t == INT {
@@ -555,41 +665,41 @@ func (p *Parser) parseEnum() *Enum {
 	for p.tok != RBRACE {
 		switch p.tok {
 		case IDENT:
-			node := p.parseEnumField()
-			list = append(list, node)
+			list = append(list, p.parseEnumField())
 		case RESERVED:
 			list = append(list, p.parseReserved())
 		case OPTION:
 			list = append(list, p.parseOption())
 		default:
-			panic("parseEnum not implement")
+			list = append(list, p.parseEnumField())
 		}
 	}
 	closing := p.pos
 	p.eat(RBRACE)
+	if p.tok == SEMICOLON {
+		p.eat(p.tok)
+	}
 	e.Fields = &FieldList{
-		Opening: opening,
-		List:    list,
-		Closing: closing,
+		Opening:  opening,
+		List:     list,
+		Closing:  closing,
+		CloseTok: RBRACE,
+		OpenTok:  LBRACE,
 	}
 	return e
 }
 
 func (p *Parser) parseEnumField() *EnumField {
-	pos := p.pos
 	name := p.parseIdent()
 	tokPos := p.pos
 	p.eat(ASSIGN)
 	id := p.parseInteger()
-	var option *FieldOption
+	var option *FieldOptions
 	if p.tok == LBRACK {
-		p.eat(LBRACK)
-		option = p.parseFieldOption()
-		p.eat(RBRACK)
+		option = p.parseFieldOptions()
 	}
 	p.eat(SEMICOLON)
 	return &EnumField{
-		Enum:    pos,
 		Name:    name,
 		TokPos:  tokPos,
 		ID:      id,
@@ -609,8 +719,11 @@ func (p *Parser) parseMessage(parent *Message) *Message {
 		Name:    name,
 	}
 	var list []Expr
-	str := p.syntax.Name.Value[1 : len(p.syntax.Name.Value)-1]
-	var pb2 = str == "proto2"
+	var pb2 = true
+	if p.syntax != nil {
+		str := p.syntax.Name.Value[1 : len(p.syntax.Name.Value)-1]
+		pb2 = str == "proto2"
+	}
 	for p.tok != RBRACE {
 		var node Expr
 		switch p.tok {
@@ -633,7 +746,10 @@ func (p *Parser) parseMessage(parent *Message) *Message {
 			node = p.parseExtend()
 		case OPTION:
 			node = p.parseOption()
-		case REPEATED, OPTIONAL:
+		case REPEATED, OPTIONAL, REQUIRED:
+			if p.tok == REQUIRED && !pb2 {
+				panic("proto3 not support required")
+			}
 			if tok, _ := p.lexer.PeekToken(); tok == GROUP {
 				if pb2 {
 					node = p.parseGroupField()
@@ -643,20 +759,24 @@ func (p *Parser) parseMessage(parent *Message) *Message {
 			} else {
 				node = p.parseField()
 			}
-		case REQUIRED:
-			if !pb2 {
-				panic("proto3 not support required")
-			}
-			node = p.parseField()
 		default:
 			if pb2 {
-				panic("proto2 need optional")
+				fmt.Println("[WARN] proto2 need optional")
 			}
 			node = p.parseField()
 		}
+		for p.tok == SEMICOLON {
+			p.eat(p.tok)
+		}
 		list = append(list, node)
 	}
-	m.Fields = &FieldList{Opening: opening, List: list, Closing: p.pos}
+	m.Fields = &FieldList{
+		Opening:  opening,
+		List:     list,
+		Closing:  p.pos,
+		CloseTok: RBRACE,
+		OpenTok:  LBRACE,
+	}
 	p.eat(RBRACE)
 	return m
 }
@@ -677,6 +797,9 @@ func (p *Parser) parseService() *Service {
 		default:
 			panic("not support")
 		}
+		for p.tok == SEMICOLON {
+			p.eat(p.tok)
+		}
 	}
 	closing := p.pos
 	p.eat(RBRACE)
@@ -684,9 +807,11 @@ func (p *Parser) parseService() *Service {
 		Service: pos,
 		Name:    name,
 		Fields: &FieldList{
-			Opening: opening,
-			List:    fields,
-			Closing: closing,
+			Opening:  opening,
+			OpenTok:  LBRACE,
+			List:     fields,
+			Closing:  closing,
+			CloseTok: RBRACE,
 		},
 	}
 }
@@ -695,6 +820,7 @@ func (p *Parser) parseRpc() *Rpc {
 	pos := p.pos
 	p.eat(RPC)
 	name := p.parseIdent()
+	lpReq := p.pos
 	p.eat(LPAREN)
 	var streamRequest, streamResponse Pos
 	if p.tok == STREAM {
@@ -702,29 +828,41 @@ func (p *Parser) parseRpc() *Rpc {
 		p.eat(p.tok)
 	}
 	param := p.parseMessageType()
+	rpReq := p.pos
 	p.eat(RPAREN)
-	p.eat(RETURNS)
+
+	returnPos := p.eat(RETURNS)
+
+	lpResp := p.pos
 	p.eat(LPAREN)
 	if p.tok == STREAM {
 		streamResponse = p.pos
 		p.eat(p.tok)
 	}
 	result := p.parseMessageType()
+	rpResp := p.pos
 	p.eat(RPAREN)
 	var body *FieldList
+	var semiPos Pos
 	if p.tok == LBRACE {
 		body = p.parseRpcBody()
 	} else {
-		p.eat(SEMICOLON)
+		semiPos = p.eat(SEMICOLON)
 	}
 	return &Rpc{
 		Rpc:            pos,
 		Name:           name,
+		LparenRequest:  lpReq,
 		StreamRequest:  streamRequest,
 		RequestType:    param,
+		RparenRequest:  rpReq,
+		Return:         returnPos,
+		LparenResponse: lpResp,
 		StreamResponse: streamResponse,
 		ResponseType:   result,
+		RparenResponse: rpResp,
 		Body:           body,
+		SemiPos:        semiPos,
 	}
 }
 
@@ -738,9 +876,11 @@ func (p *Parser) parseRpcBody() *FieldList {
 	closing := p.pos
 	p.eat(RBRACE)
 	return &FieldList{
-		Opening: opening,
-		List:    options,
-		Closing: closing,
+		Opening:  opening,
+		OpenTok:  LBRACE,
+		List:     options,
+		Closing:  closing,
+		CloseTok: RBRACE,
 	}
 }
 
@@ -764,9 +904,11 @@ func (p *Parser) parseExtend() *Extend {
 		Extend:      pos,
 		MessageType: name,
 		Fields: &FieldList{
-			Opening: opening,
-			List:    fields,
-			Closing: closing,
+			Opening:  opening,
+			OpenTok:  LBRACE,
+			List:     fields,
+			Closing:  closing,
+			CloseTok: RBRACE,
 		},
 	}
 }
@@ -789,10 +931,16 @@ func (p *Parser) parseExtensions() *Extensions {
 	pos := p.pos
 	p.eat(EXTENSIONS)
 	ranges := p.parseRanges()
-	p.eat(SEMICOLON)
+	var options *FieldOptions
+	if p.tok == LBRACK {
+		options = p.parseFieldOptions()
+	}
+	semiPos := p.eat(SEMICOLON)
 	return &Extensions{
 		Extensions: pos,
 		Ranges:     ranges,
+		Options:    options,
+		SemiPos:    semiPos,
 	}
 }
 
@@ -806,17 +954,19 @@ func (p *Parser) parseField() *Field {
 
 	var typ = p.parseFieldType()
 	name := p.parseIdent()
+	assignPos := p.pos
 	p.eat(ASSIGN)
 	id := p.parseInteger()
 	options := p.parseFieldOptions()
 	p.eat(SEMICOLON)
 	return &Field{
-		TokPos:  pos,
-		Label:   tok,
-		Type:    typ,
-		Name:    name,
-		Number:  id,
-		Options: options,
+		TokPos:    pos,
+		Label:     tok,
+		Type:      typ,
+		Name:      name,
+		AssignPos: assignPos,
+		Number:    id,
+		Options:   options,
 	}
 }
 
@@ -837,10 +987,9 @@ func (p *Parser) parseFieldOptions() *FieldOptions {
 	var options []*FieldOption
 	for p.tok != RBRACK {
 		options = append(options, p.parseFieldOption())
-		if p.tok != COMMA {
-			break
+		if p.tok == COMMA {
+			p.eat(p.tok)
 		}
-		p.eat(p.tok)
 	}
 	closing := p.pos
 	p.eat(RBRACK)
@@ -878,9 +1027,12 @@ func (p *Parser) parseOneof() *Oneof {
 	p.eat(LBRACE)
 	var fields []Expr
 	for p.tok != RBRACE {
-		if p.tok == OPTION {
+		switch p.tok {
+		case OPTION:
 			fields = append(fields, p.parseOption())
-		} else {
+		case GROUP:
+			fields = append(fields, p.parseGroupField())
+		default:
 			fields = append(fields, p.parseOneofField())
 		}
 	}
@@ -890,15 +1042,17 @@ func (p *Parser) parseOneof() *Oneof {
 		Oneof: pos,
 		Name:  name,
 		Fields: &FieldList{
-			Opening: opening,
-			List:    fields,
-			Closing: closing,
+			Opening:  opening,
+			OpenTok:  LBRACE,
+			List:     fields,
+			Closing:  closing,
+			CloseTok: RBRACE,
 		},
 	}
 }
 
 func (p *Parser) parseOneofField() *OneofField {
-	typ := p.parseIdent()
+	typ := p.parseFieldType()
 	name := p.parseIdent()
 	p.eat(ASSIGN)
 	number := p.parseInteger()
@@ -918,6 +1072,8 @@ func (p *Parser) parseFieldOption() *FieldOption {
 	var value Expr
 	if p.tok == LBRACE {
 		value = p.parseKeyValueArray()
+	} else if p.tok == LPAREN {
+		value = p.parseOptionName()
 	} else {
 		value = p.parseConst()
 	}
@@ -954,12 +1110,12 @@ func (p *Parser) parseFloat() *Float {
 		pre = "-"
 	}
 	lit := p.lit
-	p.eat(FLOAT)
-	v, err := strconv.ParseFloat(pre+lit, 64)
-	if err != nil {
-		panic(err)
+	if lit == "inf" || lit == "nan" {
+		p.eat(IDENT)
+	} else {
+		p.eat(FLOAT)
 	}
-	return &Float{Float: pos, Value: v}
+	return &Float{Float: pos, Value: pre + lit}
 }
 
 func (p *Parser) parseString() *String {
@@ -975,7 +1131,7 @@ func (p *Parser) parseString() *String {
 func (p *Parser) parseOptionName() *OptionName {
 	pos := p.pos
 	var name Expr
-	var idents []*Ident
+	var idents []Expr
 	opening, closing := NoPos, NoPos
 	switch p.tok {
 	case IDENT:
@@ -986,10 +1142,12 @@ func (p *Parser) parseOptionName() *OptionName {
 		name = p.parseFullIdent()
 		closing = p.pos
 		p.eat(RPAREN)
+	default:
+		name = p.parseIdent()
 	}
 	for p.tok == PERIOD {
 		p.eat(PERIOD)
-		idents = append(idents, p.parseIdent())
+		idents = append(idents, p.parseOptionName())
 	}
 	return &OptionName{
 		NamePos:      pos,
@@ -1028,7 +1186,7 @@ func (p *Parser) parseMessageType() *MessageType {
 	}
 	var idents []*Ident
 	var messageName *Ident
-	for p.tok == IDENT {
+	for p.tok == IDENT || p.tok.IsKeyword() {
 		messageName = p.parseIdent()
 		if p.tok == PERIOD {
 			idents = append(idents, messageName)
@@ -1089,9 +1247,12 @@ func (p *Parser) parseStrFieldNames() *StrFieldNames {
 }
 
 func (p *Parser) parseGroupField() *GroupField {
+	var label *Ident
+	if p.tok != GROUP {
+		label = p.parseIdent()
+	}
+
 	pos := p.pos
-	label := p.tok
-	p.eat(p.tok)
 	p.eat(GROUP)
 	name := p.parseIdent()
 	var num *Integer
@@ -1099,23 +1260,87 @@ func (p *Parser) parseGroupField() *GroupField {
 		p.eat(ASSIGN)
 		num = p.parseInteger()
 	}
+
+	var options *FieldOptions
+	if p.tok == LBRACK {
+		options = p.parseFieldOptions()
+	}
+
 	opening := p.pos
 	p.eat(LBRACE)
 	var fields []Expr
 	for p.tok != RBRACE {
-		fields = append(fields, p.parseField())
+		if t, _ := p.lexer.PeekToken(); t == GROUP {
+			fields = append(fields, p.parseGroupField())
+		} else {
+			switch p.tok {
+			case ENUM:
+				fields = append(fields, p.parseEnum())
+			case MESSAGE:
+				fields = append(fields, p.parseMessage(nil))
+			case MAP:
+				fields = append(fields, p.parseMapField())
+			case EXTENSIONS:
+				fields = append(fields, p.parseExtensions())
+			default:
+				fields = append(fields, p.parseField())
+			}
+		}
 	}
 	closing := p.pos
 	p.eat(RBRACE)
+	if p.tok == SEMICOLON {
+		p.eat(SEMICOLON)
+	}
 	return &GroupField{
-		Label:  label,
-		Group:  pos,
-		Name:   name,
-		Number: num,
+		Label:   label,
+		Group:   pos,
+		Name:    name,
+		Number:  num,
+		Options: options,
 		Fields: &FieldList{
-			Opening: opening,
-			List:    fields,
-			Closing: closing,
+			Opening:  opening,
+			OpenTok:  LBRACE,
+			List:     fields,
+			Closing:  closing,
+			CloseTok: RBRACE,
 		},
 	}
+}
+
+func (p *Parser) parseKeyOption() *KeyOption {
+	opening := p.pos
+	p.eat(LBRACK)
+	var names []*OptionName
+	names = append(names, p.parseOptionName())
+	for p.tok == DIV {
+		p.eat(p.tok)
+		names = append(names, p.parseOptionName())
+	}
+	closing := p.pos
+	p.eat(RBRACK)
+	return &KeyOption{Opening: opening, Name: names, Closing: closing}
+}
+
+func (p *Parser) parseArray() *Array {
+	opening := p.pos
+	p.eat(LBRACK)
+	var list []Expr
+	var sep []Token
+	for p.tok != RBRACK {
+		if len(list) > 0 {
+			if p.tok == COMMA {
+				p.eat(COMMA)
+				sep = append(sep, COMMA)
+			}
+		}
+		if p.tok == LBRACE {
+			list = append(list, p.parseKeyValueArray())
+		} else {
+			list = append(list, p.parseConst())
+		}
+	}
+	closing := p.pos
+	p.eat(RBRACK)
+	return &Array{Opening: opening, List: list, Closing: closing}
 }

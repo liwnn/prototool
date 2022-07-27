@@ -2,7 +2,6 @@ package printer
 
 import (
 	"io"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"unicode"
@@ -109,8 +108,7 @@ func (p *printer) print(args ...interface{}) {
 			data = x.Value
 			p.lastTok = parser.INT
 		case *parser.Float:
-			s := strconv.FormatFloat(x.Value, 'g', -1, 64)
-			data = s
+			data = x.Value
 			p.lastTok = parser.FLOAT
 		}
 		next := p.pos
@@ -163,6 +161,9 @@ func (p *printer) writeCommentPrefix(pos, next parser.Position, prev *parser.Com
 			j := 0
 			for i, ch := range p.wsbuf {
 				switch ch {
+				case blank:
+					p.wsbuf[i] = ignore
+					continue
 				case vtab:
 					hasSep = true
 					continue
@@ -178,6 +179,9 @@ func (p *printer) writeCommentPrefix(pos, next parser.Position, prev *parser.Com
 			sep := byte(' ')
 			if p.CommentAlign {
 				sep = byte('\t')
+			}
+			if pos.Line == next.Line {
+				sep = byte(' ')
 			}
 			p.writeByte(sep, 1)
 		}
@@ -289,7 +293,7 @@ func (p *printer) writeComment(comment *parser.Comment) {
 
 func (p *printer) posFor(pos parser.Pos) parser.Position {
 	// not used frequently enough to cache entire token.parser.Position
-	return p.fileInfo.Position(pos, false /* absolute position */)
+	return p.fileInfo.Position(pos)
 }
 
 func trimRight(s string) string {
@@ -437,13 +441,33 @@ func (p *printer) expr(expr parser.Expr) {
 			}
 			p.expr(s)
 		}
+	case *parser.StringList:
+		for i, v := range x.Strings {
+			if i != 0 {
+				p.print(parser.COMMA, blank)
+			}
+			p.expr(v)
+		}
+	case *parser.Array:
+		p.print(x.Opening, parser.LBRACK)
+		for i, v := range x.List {
+			if i != 0 {
+				if i < len(x.Sep) {
+					p.print(x.Sep[i-1], blank)
+				} else {
+					p.print(newline)
+				}
+			}
+			p.expr(v)
+		}
+		p.print(x.Closing, parser.RBRACK)
 	case *parser.Service:
 		p.print(x.Pos(), parser.SERVICE, blank)
 		p.expr(x.Name)
 		p.print(blank)
 		p.fieldList(x.Fields)
 	case *parser.FieldOptions:
-		p.print(blank, x.Pos(), parser.LBRACK, indent)
+		p.print(x.Pos(), parser.LBRACK, indent)
 		for i, f := range x.List {
 			writeNewline := p.fileInfo.Line(f.Pos()) != p.last.Line
 			if i != 0 {
@@ -493,6 +517,15 @@ func (p *printer) expr(expr parser.Expr) {
 		}
 		p.print(blank)
 		p.expr(x.Value)
+	case *parser.KeyOption:
+		p.print(x.Pos(), parser.LBRACK)
+		for i, v := range x.Name {
+			if i != 0 {
+				p.print(parser.DIV)
+			}
+			p.expr(v)
+		}
+		p.print(x.End(), parser.RBRACK)
 	default:
 		panic("unhandled expr")
 	}
@@ -503,16 +536,16 @@ func (p *printer) fieldList(fields *parser.FieldList) {
 	srcIsOneLine := p.lineFor(fields.Pos()) == p.lineFor(fields.End())
 	if !hasComments && srcIsOneLine {
 		if len(fields.List) == 0 {
-			p.print(fields.Pos(), parser.LBRACE, fields.End(), parser.RBRACE)
+			p.print(fields.Pos(), fields.OpenTok, fields.End(), fields.CloseTok)
 			return
 		} else if len(fields.List) == 1 {
-			p.print(fields.Pos(), parser.LBRACE, blank)
+			p.print(fields.Pos(), fields.OpenTok, blank)
 			p.printField(fields.List[0], blank)
-			p.print(blank, fields.End(), parser.RBRACE)
+			p.print(blank, fields.End(), fields.CloseTok)
 			return
 		}
 	}
-	p.print(fields.Pos(), parser.LBRACE, indent)
+	p.print(fields.Pos(), fields.OpenTok, indent)
 	if hasComments || len(fields.List) > 0 {
 		p.print(formfeed)
 	}
@@ -526,7 +559,7 @@ func (p *printer) fieldList(fields *parser.FieldList) {
 		}
 		p.printField(f, sep)
 	}
-	p.print(unindent, formfeed, fields.End(), parser.RBRACE)
+	p.print(unindent, formfeed, fields.End(), fields.CloseTok)
 }
 
 func (p *printer) printField(f parser.Expr, sep whiteSpace) {
@@ -541,9 +574,10 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 		p.print(sep)
 
 		p.expr(t.Name)
-		p.print(sep, parser.ASSIGN, sep)
+		p.print(sep, t.AssignPos, parser.ASSIGN, sep)
 		p.expr(t.Number)
 		if t.Options != nil {
+			p.print(blank)
 			p.expr(t.Options)
 		}
 		p.print(parser.SEMICOLON)
@@ -556,15 +590,23 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 		p.print(sep, parser.ASSIGN, sep)
 		p.expr(t.Number)
 		if t.Options != nil {
-			p.print(blank, parser.LBRACK)
+			p.print(blank)
 			p.expr(t.Options)
-			p.print(parser.RBRACK)
 		}
 		p.print(parser.SEMICOLON)
 	case *parser.GroupField:
-		p.print(t.Pos(), t.Label, blank, parser.GROUP, blank, t.Name, blank)
+		if t.Label != nil {
+			p.expr(t.Label)
+			p.print(blank)
+		}
+		p.print(t.Pos(), parser.GROUP, blank)
+		p.expr(t.Name)
+		p.print(blank)
 		if t.Number != nil {
 			p.print(parser.ASSIGN, blank, t.Number, blank)
+		}
+		if t.Options != nil {
+			p.expr(t.Options)
 		}
 		p.fieldList(t.Fields)
 	case *parser.EnumField:
@@ -572,9 +614,8 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 		p.print(sep, t.TokPos, parser.ASSIGN, sep)
 		p.expr(t.ID)
 		if t.Options != nil {
-			p.print(blank, parser.LBRACK)
+			p.print(blank)
 			p.expr(t.Options)
-			p.print(parser.RBRACK)
 		}
 		p.print(parser.SEMICOLON)
 	case *parser.Reserved:
@@ -584,38 +625,43 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 	case *parser.Rpc:
 		p.print(t.Pos(), parser.RPC, blank)
 		p.expr(t.Name)
-		p.print(blank, parser.LPAREN)
+		p.print(blank, t.LparenRequest, parser.LPAREN)
 		if t.StreamRequest > 0 {
 			p.print(parser.STREAM, blank)
 		}
 		p.expr(t.RequestType)
-		p.print(parser.RPAREN, blank)
-		p.print(parser.RETURNS, blank, parser.LPAREN)
+		p.print(t.RparenRequest, parser.RPAREN, blank)
+		p.print(t.Return, parser.RETURNS, blank, t.LparenResponse, parser.LPAREN)
 		if t.StreamResponse > 0 {
 			p.print(parser.STREAM, blank)
 		}
 		p.expr(t.ResponseType)
-		p.print(parser.RPAREN, blank)
+		p.print(t.RparenResponse, parser.RPAREN)
 		if t.Body != nil {
+			p.print(blank)
 			p.fieldList(t.Body)
 		} else {
-			p.print(parser.SEMICOLON)
+			p.print(t.SemiPos, parser.SEMICOLON)
 		}
 	case *parser.Oneof:
 		p.print(t.Pos(), parser.ONEOF, blank, t.Name, blank)
 		p.fieldList(t.Fields)
 	case *parser.OneofField:
-		p.print(t.Pos(), t.Type, sep, t.Name, sep, parser.ASSIGN, blank, t.Number)
+		p.expr(t.Type)
+		p.print(sep, t.Name, sep, parser.ASSIGN, blank, t.Number)
 		if t.Options != nil {
-			p.print(blank, parser.LBRACK)
+			p.print(blank)
 			p.expr(t.Options)
-			p.print(parser.RBRACK)
 		}
 		p.print(parser.SEMICOLON)
 	case *parser.Extensions:
 		p.print(t.Pos(), parser.EXTENSIONS, blank)
 		p.expr(t.Ranges)
-		p.print(parser.SEMICOLON)
+		if t.Options != nil {
+			p.print(blank)
+			p.expr(t.Options)
+		}
+		p.print(t.SemiPos, parser.SEMICOLON)
 	case *parser.Extend:
 		p.print(t.Pos(), parser.EXTEND, blank)
 		p.expr(t.MessageType)
@@ -626,10 +672,6 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 	default:
 		panic("not implemented")
 	}
-}
-
-func (p *printer) linesFrom(line int) int {
-	return p.out.Line - line
 }
 
 func (p *printer) declList(list []parser.Expr) {
@@ -680,9 +722,11 @@ func (p *printer) linebreak(line, min int) (nbreaks int) {
 }
 
 func (p *printer) file(file *parser.File) {
-	p.print(file.Syntax.Pos(), parser.SYNTAX, blank, parser.ASSIGN, blank)
-	p.expr(file.Syntax.Name)
-	p.print(parser.SEMICOLON)
+	if file.Syntax != nil {
+		p.print(file.Syntax.Pos(), parser.SYNTAX, blank, parser.ASSIGN, blank)
+		p.expr(file.Syntax.Name)
+		p.print(parser.SEMICOLON)
+	}
 	p.declList(file.Decls)
 	p.print(newline)
 }

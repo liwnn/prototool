@@ -62,7 +62,7 @@ func (l *Lexer) Next() (pos Pos, tok Token, lit string) {
 		case '/':
 			if l.src[l.pos] == '/' {
 				var prevPos = l.pos - 1
-				for l.pos++; l.src[l.pos] != '\n'; l.pos++ {
+				for l.pos++; l.pos < len(l.src) && l.src[l.pos] != '\n'; l.pos++ {
 				}
 				tok = COMMENT
 				lit = string(l.src[prevPos:l.pos])
@@ -110,9 +110,14 @@ func (l *Lexer) Next() (pos Pos, tok Token, lit string) {
 	return
 }
 
-func (l *Lexer) PeekToken() (Token, string) {
+func (l *Lexer) PeekToken() (token Token, lit string) {
 	oldPos := l.pos
-	_, token, lit := l.Next()
+	for {
+		_, token, lit = l.Next()
+		if token != COMMENT {
+			break
+		}
+	}
 	l.pos = oldPos
 	return token, lit
 }
@@ -161,10 +166,20 @@ func (l *Lexer) number() (Token, string) {
 		return INT, string(l.src[begin:l.pos])
 	}
 
-	for l.pos++; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
+LOOP:
+	for l.pos++; l.pos < len(l.src); l.pos++ {
+		ch := l.src[l.pos]
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch == 'e' || ch == 'E':
+			if l.src[l.pos+1] == '-' {
+				l.pos++
+			}
+		default:
+			break LOOP
+		}
 	}
 	if l.pos < len(l.src) && l.src[l.pos] == '.' {
-		l.pos++
 		for l.pos++; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
 		}
 		return FLOAT, string(l.src[begin:l.pos])
@@ -176,11 +191,9 @@ func (l *Lexer) scanString() string {
 	begin := l.pos - 1
 	endChar := l.src[begin]
 	for ; l.pos < len(l.src); l.pos++ {
-		if l.src[l.pos] == '\\' {
-			if l.src[l.pos+1] == endChar {
-				l.pos++
-				continue
-			}
+		if l.src[l.pos] == '\\' { // ( "a" | "b" | "f" | "n" | "r" | "t" | "v" | '\' | "'" | '"' )
+			l.pos++
+			continue
 		}
 		if l.src[l.pos] != endChar {
 			continue
