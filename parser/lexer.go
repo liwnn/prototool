@@ -58,6 +58,11 @@ func (l *Lexer) Next() (pos Pos, tok Token, lit string) {
 		case '*':
 			tok = MUL
 		case '.':
+			if l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+				l.pos--
+				tok, lit = l.number()
+				return
+			}
 			tok = PERIOD
 		case '/':
 			if l.src[l.pos] == '/' {
@@ -181,6 +186,13 @@ LOOP:
 	}
 	if l.pos < len(l.src) && l.src[l.pos] == '.' {
 		for l.pos++; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
+		}
+		if l.src[l.pos] == 'e' || l.src[l.pos] == 'E' {
+			if l.src[l.pos+1] == '-' {
+				l.pos++
+			}
+			for l.pos++; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
+			}
 		}
 		return FLOAT, string(l.src[begin:l.pos])
 	}

@@ -441,7 +441,7 @@ func (p *printer) expr(expr parser.Expr) {
 			}
 			p.expr(s)
 		}
-	case *parser.StringList:
+	case *parser.MultiLineString:
 		for i, v := range x.Strings {
 			if i != 0 {
 				p.print(parser.COMMA, blank)

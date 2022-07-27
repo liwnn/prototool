@@ -73,6 +73,10 @@ type (
 		String Pos
 		Value  string
 	}
+	// "A" "B"
+	MultiLineString struct {
+		Strings []*String
+	}
 
 	// MessageType = [ "." ] { ident "." } messageName
 	MessageType struct {
@@ -104,10 +108,25 @@ func (x *MessageType) Pos() Pos {
 
 type Syntax struct {
 	Syntax Pos
-	Name   *String
+	Name   Expr
 }
 
 func (x *Syntax) Pos() Pos { return x.Syntax }
+
+func (x *Syntax) Value() string {
+	switch t := x.Name.(type) {
+	case *String:
+		return t.Value
+	case *MultiLineString:
+		str := ""
+		for _, v := range t.Strings {
+			str += v.Value
+		}
+		return str
+	default:
+		return ""
+	}
+}
 
 type Import struct {
 	Import Pos
@@ -301,10 +320,6 @@ type (
 	StrFieldNames struct {
 		Strings []*String
 	}
-	// "A" "B"
-	StringList struct {
-		Strings []*String
-	}
 
 	Array struct {
 		Opening Pos
@@ -326,23 +341,23 @@ type (
 	}
 )
 
-func (x *FieldOption) Pos() Pos   { return x.Name.NamePos }
-func (x *FieldOptions) Pos() Pos  { return x.Opening }
-func (x *FieldOptions) End() Pos  { return x.Closing }
-func (x *Ranges) Pos() Pos        { return x.Ranges[0].Pos() }
-func (x *Range) Pos() Pos         { return x.Lit.Pos() }
-func (x *StrFieldNames) Pos() Pos { return x.Strings[0].Pos() }
-func (x *Rpc) Pos() Pos           { return x.Rpc }
-func (x *OneofField) Pos() Pos    { return x.Type.Pos() }
-func (x *FieldList) Pos() Pos     { return x.Opening }
-func (x *FieldList) End() Pos     { return x.Closing }
-func (x *KeyValueExpr) Pos() Pos  { return x.Key.Pos() }
-func (x *EnumField) Pos() Pos     { return x.Name.Pos() }
-func (x *KeyOption) Pos() Pos     { return x.Opening }
-func (x *KeyOption) End() Pos     { return x.Closing }
-func (x *StringList) Pos() Pos    { return x.Strings[0].Pos() }
-func (x *Array) Pos() Pos         { return x.List[0].Pos() }
-func (x *TokNode) Pos() Pos       { return x.TokPos }
+func (x *FieldOption) Pos() Pos     { return x.Name.NamePos }
+func (x *FieldOptions) Pos() Pos    { return x.Opening }
+func (x *FieldOptions) End() Pos    { return x.Closing }
+func (x *Ranges) Pos() Pos          { return x.Ranges[0].Pos() }
+func (x *Range) Pos() Pos           { return x.Lit.Pos() }
+func (x *StrFieldNames) Pos() Pos   { return x.Strings[0].Pos() }
+func (x *Rpc) Pos() Pos             { return x.Rpc }
+func (x *OneofField) Pos() Pos      { return x.Type.Pos() }
+func (x *FieldList) Pos() Pos       { return x.Opening }
+func (x *FieldList) End() Pos       { return x.Closing }
+func (x *KeyValueExpr) Pos() Pos    { return x.Key.Pos() }
+func (x *EnumField) Pos() Pos       { return x.Name.Pos() }
+func (x *KeyOption) Pos() Pos       { return x.Opening }
+func (x *KeyOption) End() Pos       { return x.Closing }
+func (x *MultiLineString) Pos() Pos { return x.Strings[0].Pos() }
+func (x *Array) Pos() Pos           { return x.List[0].Pos() }
+func (x *TokNode) Pos() Pos         { return x.TokPos }
 
 func (x *Message) FindNestedMessage(name string) *Message {
 	for _, v := range x.Fields.List {
@@ -453,7 +468,7 @@ func (p *Parser) parseSyntax() *Syntax {
 	pos := p.pos
 	p.eat(SYNTAX)
 	p.eat(ASSIGN)
-	node := p.parseString()
+	node := p.parseMultiLineString()
 	p.eat(SEMICOLON)
 	return &Syntax{
 		Syntax: pos,
@@ -538,7 +553,7 @@ func (p *Parser) parseOption() *Option {
 		if p.tok == STRING {
 			s := p.parseString()
 			if p.tok == STRING {
-				l := &StringList{}
+				l := &MultiLineString{}
 				l.Strings = append(l.Strings, s)
 				for p.tok == STRING {
 					l.Strings = append(l.Strings, p.parseString())
@@ -556,6 +571,19 @@ func (p *Parser) parseOption() *Option {
 		p.eat(SEMICOLON)
 	}
 	return &Option{Option: pos, Name: name, Value: node}
+}
+
+func (p *Parser) parseMultiLineString() Expr {
+	s := p.parseString()
+	if p.tok == STRING {
+		l := &MultiLineString{}
+		l.Strings = append(l.Strings, s)
+		for p.tok == STRING {
+			l.Strings = append(l.Strings, p.parseString())
+		}
+		return l
+	}
+	return s
 }
 
 func (p *Parser) parseKeyValueArray() *FieldList {
@@ -624,17 +652,7 @@ func (p *Parser) parseConst() Expr {
 	case IDENT:
 		return p.parseIdent()
 	case STRING:
-		str := p.parseString()
-		if p.tok == STRING {
-			l := &StringList{}
-			l.Strings = append(l.Strings, str)
-			for p.tok == STRING {
-				l.Strings = append(l.Strings, p.parseString())
-			}
-			return l
-		} else {
-			return str
-		}
+		return p.parseMultiLineString()
 	default:
 		if p.tok == SUB {
 			if t, _ := p.lexer.PeekToken(); t == INT {
@@ -721,7 +739,8 @@ func (p *Parser) parseMessage(parent *Message) *Message {
 	var list []Expr
 	var pb2 = true
 	if p.syntax != nil {
-		str := p.syntax.Name.Value[1 : len(p.syntax.Name.Value)-1]
+		str := p.syntax.Value()
+		str = str[1 : len(str)-1]
 		pb2 = str == "proto2"
 	}
 	for p.tok != RBRACE {
@@ -1282,6 +1301,8 @@ func (p *Parser) parseGroupField() *GroupField {
 				fields = append(fields, p.parseMapField())
 			case EXTENSIONS:
 				fields = append(fields, p.parseExtensions())
+			case OPTION:
+				fields = append(fields, p.parseOption())
 			default:
 				fields = append(fields, p.parseField())
 			}
@@ -1335,6 +1356,8 @@ func (p *Parser) parseArray() *Array {
 			}
 		}
 		if p.tok == LBRACE {
+			list = append(list, p.parseKeyValueArray())
+		} else if p.tok == LSS {
 			list = append(list, p.parseKeyValueArray())
 		} else {
 			list = append(list, p.parseConst())
