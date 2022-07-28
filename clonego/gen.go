@@ -149,7 +149,7 @@ func NewGenerator(src []byte) (*Generator, error) {
 func (g *Generator) Visit(node parser.Node) parser.Visitor {
 	switch node := node.(type) {
 	case *parser.Syntax:
-		g.pb2 = node.Name.Value == "\"proto2\""
+		g.pb2 = node.Value() == "proto2"
 	case *parser.Option:
 		if node.Name.Name.(*parser.Ident).Name == "go_package" {
 			if n, ok := node.Value.(*parser.String); ok {

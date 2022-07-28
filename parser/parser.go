@@ -116,11 +116,11 @@ func (x *Syntax) Pos() Pos { return x.Syntax }
 func (x *Syntax) Value() string {
 	switch t := x.Name.(type) {
 	case *String:
-		return t.Value
+		return t.Value[1 : len(t.Value)-1]
 	case *MultiLineString:
 		str := ""
 		for _, v := range t.Strings {
-			str += v.Value
+			str += v.Value[1 : len(v.Value)-1]
 		}
 		return str
 	default:
@@ -165,7 +165,7 @@ func (x *OptionName) Pos() Pos { return x.NamePos }
 type Extensions struct {
 	Extensions Pos
 	Ranges     *Ranges
-	Options    *FieldOptions
+	Options    *FieldList
 	SemiPos    Pos
 }
 
@@ -220,7 +220,7 @@ type (
 		Name      *Ident
 		AssignPos Pos
 		Number    *Integer
-		Options   *FieldOptions
+		Options   *FieldList
 	}
 
 	MapField struct {
@@ -229,7 +229,7 @@ type (
 		ValueType Expr
 		Name      *Ident
 		Number    *Integer
-		Options   *FieldOptions
+		Options   *FieldList
 	}
 
 	GroupField struct {
@@ -237,7 +237,7 @@ type (
 		Group   Pos
 		Name    *Ident
 		Number  *Integer
-		Options *FieldOptions
+		Options *FieldList
 		Fields  *FieldList
 	}
 
@@ -266,16 +266,13 @@ type (
 		Name    *Ident
 		TokPos  Pos
 		ID      *Integer
-		Options *FieldOptions
+		Options *FieldList
 	}
-	FieldOptions struct {
-		Opening Pos
-		List    []*FieldOption
-		Closing Pos
-	}
+
 	FieldOption struct {
-		Name  *OptionName
-		Value Expr
+		Name     *OptionName
+		Value    Expr
+		CommaPos Pos
 	}
 
 	KeyOption struct {
@@ -285,8 +282,10 @@ type (
 	}
 
 	KeyValueExpr struct {
-		Key   Expr
-		Value Expr
+		Key      Expr
+		ColonPos Pos
+		Value    Expr
+		CommaPos Pos
 	}
 
 	Rpc struct {
@@ -337,13 +336,11 @@ type (
 		Type    Expr
 		Name    *Ident
 		Number  *Integer
-		Options *FieldOptions
+		Options *FieldList
 	}
 )
 
 func (x *FieldOption) Pos() Pos     { return x.Name.NamePos }
-func (x *FieldOptions) Pos() Pos    { return x.Opening }
-func (x *FieldOptions) End() Pos    { return x.Closing }
 func (x *Ranges) Pos() Pos          { return x.Ranges[0].Pos() }
 func (x *Range) Pos() Pos           { return x.Lit.Pos() }
 func (x *StrFieldNames) Pos() Pos   { return x.Strings[0].Pos() }
@@ -602,9 +599,6 @@ func (p *Parser) parseKeyValueArray() *FieldList {
 	var list []Expr
 	for p.tok != closeTok {
 		list = append(list, p.parseKeyValue())
-		if p.tok == COMMA {
-			p.eat(p.tok)
-		}
 	}
 	closing := p.pos
 
@@ -628,8 +622,9 @@ func (p *Parser) parseKeyValue() *KeyValueExpr {
 	default:
 		key = p.parseIdent()
 	}
+	var colonPos Pos
 	if p.tok == COLON {
-		p.eat(COLON)
+		colonPos = p.eat(COLON)
 	}
 	var value Expr
 	if p.tok == LBRACE || p.tok == LSS {
@@ -641,9 +636,15 @@ func (p *Parser) parseKeyValue() *KeyValueExpr {
 	} else {
 		value = p.parseConst()
 	}
+	var commaPos Pos
+	if p.tok == COMMA {
+		commaPos = p.eat(p.tok)
+	}
 	return &KeyValueExpr{
-		Key:   key,
-		Value: value,
+		Key:      key,
+		ColonPos: colonPos,
+		Value:    value,
+		CommaPos: commaPos,
 	}
 }
 
@@ -712,7 +713,7 @@ func (p *Parser) parseEnumField() *EnumField {
 	tokPos := p.pos
 	p.eat(ASSIGN)
 	id := p.parseInteger()
-	var option *FieldOptions
+	var option *FieldList
 	if p.tok == LBRACK {
 		option = p.parseFieldOptions()
 	}
@@ -739,9 +740,7 @@ func (p *Parser) parseMessage(parent *Message) *Message {
 	var list []Expr
 	var pb2 = true
 	if p.syntax != nil {
-		str := p.syntax.Value()
-		str = str[1 : len(str)-1]
-		pb2 = str == "proto2"
+		pb2 = p.syntax.Value() == "proto2"
 	}
 	for p.tok != RBRACE {
 		var node Expr
@@ -950,7 +949,7 @@ func (p *Parser) parseExtensions() *Extensions {
 	pos := p.pos
 	p.eat(EXTENSIONS)
 	ranges := p.parseRanges()
-	var options *FieldOptions
+	var options *FieldList
 	if p.tok == LBRACK {
 		options = p.parseFieldOptions()
 	}
@@ -997,22 +996,22 @@ func (p *Parser) parseFieldType() Expr {
 	}
 }
 
-func (p *Parser) parseFieldOptions() *FieldOptions {
+func (p *Parser) parseFieldOptions() *FieldList {
 	if p.tok != LBRACK {
 		return nil
 	}
 	opening := p.pos
 	p.eat(LBRACK)
-	var options []*FieldOption
+	var options []Expr
 	for p.tok != RBRACK {
 		options = append(options, p.parseFieldOption())
-		if p.tok == COMMA {
-			p.eat(p.tok)
-		}
 	}
 	closing := p.pos
 	p.eat(RBRACK)
-	return &FieldOptions{Opening: opening, List: options, Closing: closing}
+	return &FieldList{
+		Opening: opening, OpenTok: LBRACK,
+		List:    options,
+		Closing: closing, CloseTok: RBRACK}
 }
 
 func (p *Parser) parseMapField() *MapField {
@@ -1096,9 +1095,14 @@ func (p *Parser) parseFieldOption() *FieldOption {
 	} else {
 		value = p.parseConst()
 	}
+	var commaPos Pos
+	if p.tok == COMMA {
+		commaPos = p.eat(p.tok)
+	}
 	return &FieldOption{
-		Name:  name,
-		Value: value,
+		Name:     name,
+		Value:    value,
+		CommaPos: commaPos,
 	}
 }
 
@@ -1280,7 +1284,7 @@ func (p *Parser) parseGroupField() *GroupField {
 		num = p.parseInteger()
 	}
 
-	var options *FieldOptions
+	var options *FieldList
 	if p.tok == LBRACK {
 		options = p.parseFieldOptions()
 	}
@@ -1365,5 +1369,5 @@ func (p *Parser) parseArray() *Array {
 	}
 	closing := p.pos
 	p.eat(RBRACK)
-	return &Array{Opening: opening, List: list, Closing: closing}
+	return &Array{Opening: opening, List: list, Sep: sep, Closing: closing}
 }

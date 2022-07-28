@@ -43,11 +43,10 @@ type printer struct {
 	out  parser.Position
 
 	// Comments
-	comments       []*parser.CommentGroup
-	comment        *parser.CommentGroup
-	cindex         int
-	commentOffset  int
-	commentNewline bool
+	comments      []*parser.CommentGroup
+	comment       *parser.CommentGroup
+	cindex        int
+	commentOffset int
 }
 
 func newPrinter(cfg *Config, file *parser.FileInfo) *printer {
@@ -62,7 +61,7 @@ func newPrinter(cfg *Config, file *parser.FileInfo) *printer {
 }
 
 func (p *printer) commentBefore(next parser.Position) bool {
-	return p.commentOffset < next.Offset && (!p.commentNewline)
+	return p.commentOffset < next.Offset
 }
 
 func (p *printer) nextComment() {
@@ -72,12 +71,27 @@ func (p *printer) nextComment() {
 		if list := c.List; len(list) > 0 {
 			p.comment = c
 			p.commentOffset = p.posFor(list[0].Pos()).Offset
-			//p.commentNewline = p.commentsHaveNewline(list)
 			return
 		}
 	}
 	// no more comments
 	p.commentOffset = infinity
+}
+
+func (p *printer) commentsHaveNewline(list []*parser.Comment) bool {
+	// len(list) > 0
+	line := p.lineFor(list[0].Pos())
+	for i, c := range list {
+		if i > 0 && p.lineFor(list[i].Pos()) != line {
+			// not all comments on the same line
+			return true
+		}
+		if t := c.Text; len(t) >= 2 && (t[1] == '/' || strings.Contains(t, "\n")) {
+			return true
+		}
+	}
+	_ = line
+	return false
 }
 
 func (p *printer) print(args ...interface{}) {
@@ -94,6 +108,10 @@ func (p *printer) print(args ...interface{}) {
 			p.lastTok = x
 		case whiteSpace:
 			i := len(p.wsbuf)
+			if i == cap(p.wsbuf) {
+				p.writeWhitespace(i)
+				i = 0
+			}
 			p.wsbuf = p.wsbuf[0 : i+1]
 			p.wsbuf[i] = x
 			p.lastTok = parser.ILLEGAL
@@ -190,6 +208,9 @@ func (p *printer) writeCommentPrefix(pos, next parser.Position, prev *parser.Com
 		j := 0
 		for i, ch := range p.wsbuf {
 			switch ch {
+			case blank:
+				p.wsbuf[i] = ignore
+				continue
 			case indent:
 				continue
 			case newline, formfeed:
@@ -389,10 +410,6 @@ func (p *printer) expr(expr parser.Expr) {
 		p.print(blank, parser.ASSIGN, blank)
 		p.expr(x.Value)
 		p.print(parser.SEMICOLON)
-	case *parser.FieldOption:
-		p.expr(x.Name)
-		p.print(blank, parser.ASSIGN, blank)
-		p.expr(x.Value)
 	case *parser.String:
 		p.print(x.Pos())
 		p.print(x)
@@ -442,9 +459,14 @@ func (p *printer) expr(expr parser.Expr) {
 			p.expr(s)
 		}
 	case *parser.MultiLineString:
+		var lastPos = p.out.Column - p.indent
 		for i, v := range x.Strings {
-			if i != 0 {
-				p.print(parser.COMMA, blank)
+			if i > 0 {
+				p.linebreak(p.lineFor(v.Pos()), 1)
+				p.flush(p.posFor(v.Pos()), parser.Token(parser.ILLEGAL))
+				for i := 0; i < int(lastPos); i++ {
+					p.print(blank)
+				}
 			}
 			p.expr(v)
 		}
@@ -452,7 +474,7 @@ func (p *printer) expr(expr parser.Expr) {
 		p.print(x.Opening, parser.LBRACK)
 		for i, v := range x.List {
 			if i != 0 {
-				if i < len(x.Sep) {
+				if i-1 < len(x.Sep) {
 					p.print(x.Sep[i-1], blank)
 				} else {
 					p.print(newline)
@@ -466,26 +488,6 @@ func (p *printer) expr(expr parser.Expr) {
 		p.expr(x.Name)
 		p.print(blank)
 		p.fieldList(x.Fields)
-	case *parser.FieldOptions:
-		p.print(x.Pos(), parser.LBRACK, indent)
-		for i, f := range x.List {
-			writeNewline := p.fileInfo.Line(f.Pos()) != p.last.Line
-			if i != 0 {
-				p.print(parser.COMMA)
-				if !writeNewline {
-					p.print(blank)
-				}
-			}
-			if writeNewline {
-				p.print(newline)
-			}
-			p.expr(f)
-		}
-		if p.fileInfo.Line(x.End()) != p.last.Line {
-			p.print(newline)
-		}
-		p.print(unindent, x.End(), parser.RBRACK)
-
 	case *parser.MessageType:
 		if x.PeriodPos > 0 {
 			p.print(x.PeriodPos, parser.PERIOD)
@@ -510,13 +512,14 @@ func (p *printer) expr(expr parser.Expr) {
 		p.fieldList(x)
 	case *parser.KeyValueExpr:
 		p.expr(x.Key)
-		switch x.Value.(type) {
-		case *parser.FieldList:
-		default:
-			p.print(parser.COLON)
+		if x.ColonPos > 0 {
+			p.print(x.ColonPos, parser.COLON)
 		}
 		p.print(blank)
 		p.expr(x.Value)
+		if x.CommaPos > 0 {
+			p.print(x.CommaPos, parser.COMMA)
+		}
 	case *parser.KeyOption:
 		p.print(x.Pos(), parser.LBRACK)
 		for i, v := range x.Name {
@@ -532,16 +535,18 @@ func (p *printer) expr(expr parser.Expr) {
 }
 
 func (p *printer) fieldList(fields *parser.FieldList) {
-	hasComments := p.commentBefore(p.posFor(fields.End()))
-	srcIsOneLine := p.lineFor(fields.Pos()) == p.lineFor(fields.End())
-	if !hasComments && srcIsOneLine {
+	hasComments := p.commentBefore(p.posFor(fields.Closing))
+	srcIsOneLine := p.lineFor(fields.Pos()) == p.lineFor(fields.Closing)
+	if /*!hasComments &&*/ srcIsOneLine {
 		if len(fields.List) == 0 {
 			p.print(fields.Pos(), fields.OpenTok, fields.End(), fields.CloseTok)
 			return
-		} else if len(fields.List) == 1 {
-			p.print(fields.Pos(), fields.OpenTok, blank)
-			p.printField(fields.List[0], blank)
-			p.print(blank, fields.End(), fields.CloseTok)
+		} else if len(fields.List) <= 2 {
+			p.print(fields.Pos(), fields.OpenTok)
+			for i, l := range fields.List {
+				p.printField(l, blank, i == len(fields.List)-1, true)
+			}
+			p.print(fields.End(), fields.CloseTok)
 			return
 		}
 	}
@@ -557,12 +562,13 @@ func (p *printer) fieldList(fields *parser.FieldList) {
 		if i > 0 {
 			p.linebreak(p.lineFor(f.Pos()), 1)
 		}
-		p.printField(f, sep)
+		last := i == len(fields.List)-1
+		p.printField(f, sep, last, false)
 	}
 	p.print(unindent, formfeed, fields.End(), fields.CloseTok)
 }
 
-func (p *printer) printField(f parser.Expr, sep whiteSpace) {
+func (p *printer) printField(f parser.Expr, sep whiteSpace, last bool, srcIsOneLine bool) {
 	switch t := f.(type) {
 	case *parser.Message, *parser.Option, *parser.Enum:
 		p.expr(t)
@@ -627,13 +633,13 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 		p.expr(t.Name)
 		p.print(blank, t.LparenRequest, parser.LPAREN)
 		if t.StreamRequest > 0 {
-			p.print(parser.STREAM, blank)
+			p.print(t.StreamRequest, parser.STREAM, blank)
 		}
 		p.expr(t.RequestType)
 		p.print(t.RparenRequest, parser.RPAREN, blank)
 		p.print(t.Return, parser.RETURNS, blank, t.LparenResponse, parser.LPAREN)
 		if t.StreamResponse > 0 {
-			p.print(parser.STREAM, blank)
+			p.print(t.StreamResponse, parser.STREAM, blank)
 		}
 		p.expr(t.ResponseType)
 		p.print(t.RparenResponse, parser.RPAREN)
@@ -669,6 +675,19 @@ func (p *printer) printField(f parser.Expr, sep whiteSpace) {
 		p.fieldList(t.Fields)
 	case *parser.KeyValueExpr:
 		p.expr(t)
+		if srcIsOneLine && !last {
+			p.print(blank)
+		}
+	case *parser.FieldOption:
+		p.expr(t.Name)
+		p.print(blank, parser.ASSIGN, blank)
+		p.expr(t.Value)
+		if t.CommaPos > 0 {
+			p.print(parser.COMMA)
+		}
+		if srcIsOneLine && !last {
+			p.print(blank)
+		}
 	default:
 		panic("not implemented")
 	}
