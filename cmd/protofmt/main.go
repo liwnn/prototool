@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 
 	"github.com/liwnn/prototool/parser"
@@ -65,8 +64,7 @@ func processFile(filename string, out io.Writer) error {
 
 	defer func() {
 		if e := recover(); e != nil {
-			stack := debug.Stack()
-			fmt.Printf("filename[%v] stack[%v]", filename, string(stack))
+			fmt.Printf("Failure: %v:%v", filename, e)
 			os.Exit(1)
 		}
 	}()

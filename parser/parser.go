@@ -443,7 +443,7 @@ func (p *Parser) eat(tok Token) Pos {
 		return pos
 	}
 	pos := p.file.Position(p.pos)
-	panic(fmt.Errorf("Line[%v] Column[%v]", pos.Line, pos.Column))
+	panic(fmt.Errorf("%v:%v: syntax error: unexpected '%v', expecting '%v'", pos.Line, pos.Column, p.tok.String(), tok))
 }
 
 func (p *Parser) parseCommentGroup() (comments *CommentGroup) {
