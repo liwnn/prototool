@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strings"
 
@@ -57,7 +56,7 @@ func report(err error) {
 }
 
 func processFile(filename string, out io.Writer) error {
-	text, err := ioutil.ReadFile(filename)
+	text, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("ReadFile[%v] failed[%v]", filename, err)
 	}
@@ -65,7 +64,7 @@ func processFile(filename string, out io.Writer) error {
 	if *message != "" {
 		messages := strings.Split(*message, ",")
 		// 按名字生成
-		result, err := clonego.Gen(text, messages)
+		result, err := clonego.Gen("", text, messages)
 		if err != nil {
 			return err
 		}
@@ -73,7 +72,7 @@ func processFile(filename string, out io.Writer) error {
 		return err
 	}
 	// 全部生成
-	result, err := clonego.GenAll(text)
+	result, err := clonego.GenAll("", text)
 	if err != nil {
 		panic(err)
 	}

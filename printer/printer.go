@@ -29,7 +29,7 @@ const (
 type printer struct {
 	// config
 	Config
-	fileInfo *parser.FileInfo
+	fset *parser.FileSet
 
 	// Current state
 	output  []byte
@@ -49,11 +49,11 @@ type printer struct {
 	commentOffset int
 }
 
-func newPrinter(cfg *Config, file *parser.FileInfo) *printer {
+func newPrinter(cfg *Config, fset *parser.FileSet) *printer {
 	return &printer{
-		Config:   *cfg,
-		fileInfo: file,
-		wsbuf:    make([]whiteSpace, 0, 16),
+		Config: *cfg,
+		fset:   fset,
+		wsbuf:  make([]whiteSpace, 0, 16),
 
 		pos: parser.Position{Column: 1},
 		out: parser.Position{Column: 1},
@@ -314,7 +314,7 @@ func (p *printer) writeComment(comment *parser.Comment) {
 
 func (p *printer) posFor(pos parser.Pos) parser.Position {
 	// not used frequently enough to cache entire token.parser.Position
-	return p.fileInfo.Position(pos)
+	return p.fset.PositionFor(pos)
 }
 
 func trimRight(s string) string {
@@ -723,7 +723,7 @@ func (p *printer) declList(list []parser.Expr) {
 }
 
 func (p *printer) lineFor(pos parser.Pos) int {
-	return p.fileInfo.Line(pos)
+	return p.fset.Line(pos)
 }
 
 func (p *printer) linebreak(line, min int) (nbreaks int) {
@@ -846,12 +846,12 @@ type Config struct {
 	CommentAlign bool
 }
 
-func (cfg *Config) Fprint(output io.Writer, file *parser.FileInfo, node parser.Node) (err error) {
+func (cfg *Config) Fprint(output io.Writer, fset *parser.FileSet, node parser.Node) (err error) {
 	if len(cfg.IndentBytes) == 0 {
 		cfg.IndentBytes = append(cfg.IndentBytes, '\t')
 	}
 
-	p := newPrinter(cfg, file)
+	p := newPrinter(cfg, fset)
 	p.printNode(node)
 	p.flush(parser.Position{Offset: infinity, Line: infinity}, parser.EOF)
 

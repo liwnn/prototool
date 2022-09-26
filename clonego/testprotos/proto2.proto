@@ -1,0 +1,19 @@
+syntax = "proto2";
+
+option go_package = "foo";
+
+enum EnumAllowingAlias {
+  UNKNOWN = 0;
+  STARTED = 1;
+  RUNNING = 2;
+}
+
+message Outer {
+  message Inner {   // Level 2
+    required int64 ival = 1;
+  }
+  repeated Inner inner_message = 2;
+  optional EnumAllowingAlias enum_field = 3;
+  map<int32, string> my_map = 4;
+  extensions 20 to 30;
+}

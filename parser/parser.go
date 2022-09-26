@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -411,7 +412,15 @@ type Parser struct {
 }
 
 // NewParser new
-func NewParser(file *FileInfo, src []byte) *Parser {
+func NewParser(fset *FileSet, filename string, src []byte) *Parser {
+	if src == nil {
+		var err error
+		src, err = os.ReadFile(filename)
+		if err != nil {
+			panic(err)
+		}
+	}
+	file := fset.AddFile(filename)
 	p := &Parser{
 		file:  file,
 		lexer: NewLexer(file, src),

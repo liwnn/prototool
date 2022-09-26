@@ -69,8 +69,8 @@ func processFile(filename string, out io.Writer) error {
 		}
 	}()
 
-	file := parser.NewFileInfo()
-	p := parser.NewParser(file, src)
+	fset := parser.NewFileSet()
+	p := parser.NewParser(fset, "", src)
 	f := p.ParseFile()
 
 	cfg := printer.Config{
@@ -84,7 +84,7 @@ func processFile(filename string, out io.Writer) error {
 	}
 
 	var buf bytes.Buffer
-	if err := cfg.Fprint(&buf, file, f); err != nil {
+	if err := cfg.Fprint(&buf, fset, f); err != nil {
 		return err
 	}
 	res := buf.Bytes()

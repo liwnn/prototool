@@ -71,13 +71,15 @@ type MapCloneItem struct {
 	FuncName     string
 }
 type MapClone struct {
-	Items []*MapCloneItem
-	Gened map[[2]string]bool
+	PackageName string
+	Items       []*MapCloneItem
+	Gened       map[[2]string]bool
 }
 
-func newMapClone() *MapClone {
+func newMapClone(packageName string) *MapClone {
 	return &MapClone{
-		Gened: make(map[[2]string]bool),
+		PackageName: packageName,
+		Gened:       make(map[[2]string]bool),
 	}
 }
 
@@ -105,6 +107,7 @@ type ArrayCloneItem struct {
 type Generator struct {
 	pb2         bool
 	packageName string
+	fset        *parser.FileSet
 
 	messages map[string]*parser.Message
 	enums    map[string]*parser.Enum
@@ -113,8 +116,9 @@ type Generator struct {
 	mlist          *list.List
 	commentMessage []string
 	done           map[string]bool
-	mapClone       map[string]*MapClone
-	arrayClone     map[string]*ArrayCloneItem
+	mapClone       []*MapClone
+	arrayClone     []*ArrayCloneItem
+	imports        map[string]struct{}
 
 	otherPackage map[string][]string
 
@@ -122,9 +126,9 @@ type Generator struct {
 }
 
 // NewGenerator n
-func NewGenerator(src []byte) (*Generator, error) {
-	file := parser.NewFileInfo()
-	p := parser.NewParser(file, src)
+func NewGenerator(filename string, src []byte) (*Generator, error) {
+	fset := parser.NewFileSet()
+	p := parser.NewParser(fset, filename, src)
 	f := p.ParseFile()
 	g := &Generator{
 		messages:     make(map[string]*parser.Message),
@@ -132,10 +136,10 @@ func NewGenerator(src []byte) (*Generator, error) {
 		services:     make(map[string]*parser.Service),
 		done:         make(map[string]bool),
 		mlist:        list.New(),
-		arrayClone:   make(map[string]*ArrayCloneItem),
-		mapClone:     make(map[string]*MapClone),
 		otherPackage: make(map[string][]string),
 		result:       bytes.NewBuffer(nil),
+		imports:      map[string]struct{}{},
+		fset:         fset,
 	}
 	parser.Walk(g, f)
 
@@ -150,6 +154,9 @@ func (g *Generator) Visit(node parser.Node) parser.Visitor {
 	switch node := node.(type) {
 	case *parser.Syntax:
 		g.pb2 = node.Value() == "proto2"
+	case *parser.Import:
+		s := strings.Trim(node.Name.Value, "\"")
+		g.imports[s] = struct{}{}
 	case *parser.Option:
 		if node.Name.Name.(*parser.Ident).Name == "go_package" {
 			if n, ok := node.Value.(*parser.String); ok {
@@ -168,6 +175,24 @@ func (g *Generator) Visit(node parser.Node) parser.Visitor {
 		g.services[node.Name.Name] = node
 	}
 	return g
+}
+
+type VisitGoPack struct {
+	packageName string
+}
+
+func (v *VisitGoPack) Visit(node parser.Node) parser.Visitor {
+	switch node := node.(type) {
+	case *parser.Option:
+		if node.Name.Name.(*parser.Ident).Name == "go_package" {
+			if n, ok := node.Value.(*parser.String); ok {
+				names := strings.Split(n.Value, ";")
+				v.packageName = names[len(names)-1]
+				return nil
+			}
+		}
+	}
+	return v
 }
 
 func (g *Generator) GenAll() []byte {
@@ -210,6 +235,35 @@ func (g *Generator) genCode() []byte {
 	g.P("package ", g.getPackageName())
 	g.P()
 
+	// import
+	var imports []string
+	for pname := range g.imports {
+		if pname != "" {
+			if _, ok := g.imports[pname]; !ok {
+				panic(fmt.Errorf("%v not import", pname))
+			}
+			file := g.fset.File(0)
+			name := file.Name()
+			dir := filepath.Dir(name)
+			p := parser.NewParser(g.fset, filepath.Join(dir, pname), nil)
+			nf := p.ParseFile()
+			np := &VisitGoPack{}
+			parser.Walk(np, nf)
+			if np.packageName == "" {
+				panic("need go_package")
+			}
+			imports = append(imports, np.packageName)
+		}
+	}
+
+	if len(imports) > 0 {
+		g.P("import (")
+		for _, v := range imports {
+			g.P("\t", v)
+		}
+		g.P(")")
+	}
+
 	for g.mlist.Len() > 0 {
 		e := g.mlist.Back()
 		name := g.mlist.Remove(e).(string)
@@ -220,8 +274,8 @@ func (g *Generator) genCode() []byte {
 			g.F(basePointerClone, strFirstToUpper(name), name, name, name)
 		}
 	}
-
-	for pname, mapInfo := range g.mapClone {
+	for _, mapInfo := range g.mapClone {
+		pname := mapInfo.PackageName
 		for _, item := range mapInfo.Items {
 			keyTypeName := g.convertGoType(item.Key)
 			var typeName, cloneEx string
@@ -458,10 +512,16 @@ func (g *Generator) addMapClone(keyType, valueType, packageName, funcName string
 	if packageName == g.getPackageName() {
 		packageName = ""
 	}
-	c := g.mapClone[packageName]
+	var c *MapClone
+	for _, v := range g.mapClone {
+		if v.PackageName == packageName {
+			c = v
+			break
+		}
+	}
 	if c == nil {
-		c = newMapClone()
-		g.mapClone[packageName] = c
+		c = newMapClone(packageName)
+		g.mapClone = append(g.mapClone, c)
 	}
 	c.add(keyType, valueType, funcName, valueBuildin)
 }
@@ -480,14 +540,16 @@ func (g *Generator) addOtherPackage(pname, rawType string) bool {
 }
 
 func (g *Generator) addArrayClone(name string, simple bool, funcName string) {
-	if _, ok := g.arrayClone[name]; ok {
-		return
+	for _, v := range g.arrayClone {
+		if v.Name == name {
+			return
+		}
 	}
-	g.arrayClone[name] = &ArrayCloneItem{
+	g.arrayClone = append(g.arrayClone, &ArrayCloneItem{
 		Name:     name,
 		FuncName: funcName,
 		Simple:   simple,
-	}
+	})
 }
 
 func (g *Generator) addGen(name string) {
@@ -514,8 +576,8 @@ type GenResult struct {
 }
 
 // Gen 生成
-func Gen(src []byte, messageName []string) (*GenResult, error) {
-	generator, err := NewGenerator(src)
+func Gen(filename string, src []byte, messageName []string) (*GenResult, error) {
+	generator, err := NewGenerator(filename, src)
 	if err != nil {
 		return nil, err
 	}
@@ -526,8 +588,8 @@ func Gen(src []byte, messageName []string) (*GenResult, error) {
 	}, nil
 }
 
-func GenAll(src []byte) (*GenResult, error) {
-	generator, err := NewGenerator(src)
+func GenAll(filename string, src []byte) (*GenResult, error) {
+	generator, err := NewGenerator(filename, src)
 	if err != nil {
 		return nil, err
 	}

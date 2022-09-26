@@ -8,8 +8,8 @@ import (
 )
 
 func Format(src []byte) ([]byte, error) {
-	file := parser.NewFileInfo()
-	parser := parser.NewParser(file, src)
+	fset := parser.NewFileSet()
+	parser := parser.NewParser(fset, "", src)
 	f := parser.ParseFile()
 
 	cfg := printer.Config{
@@ -20,7 +20,7 @@ func Format(src []byte) ([]byte, error) {
 		CommentAlign: true,
 	}
 	var buf bytes.Buffer
-	if err := cfg.Fprint(&buf, file, f); err != nil {
+	if err := cfg.Fprint(&buf, fset, f); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
